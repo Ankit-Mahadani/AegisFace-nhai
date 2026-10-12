@@ -7,8 +7,21 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
-# react-native-reanimated
--keep class com.swmansion.reanimated.** { *; }
--keep class com.facebook.react.turbomodule.** { *; }
+# TFLite
+-keep class org.tensorflow.lite.** { *; }
+
+# React Native New Arch / Nitro
+-keep class com.facebook.jni.** { *; }
+-keep class com.facebook.react.fabric.** { *; }
+-keep class com.margelo.nitro.** { *; }
+
+# VisionCamera
+-keep class com.mrousavy.camera.** { *; }
+
+# op-sqlite
+-keep class com.op.sqlite.** { *; }
+
+# Expo modules
+-keep class expo.modules.** { *; }
 
 # Add any project specific keep options here:

@@ -1,10 +1,10 @@
-// Objective-C bridge file required for React Native to export Swift modules.
+// Objective-C bridge — exports the Swift module to React Native.
 #import <React/RCTBridgeModule.h>
 
 @interface RCT_EXTERN_MODULE(AegisFaceMediaPipe, NSObject)
 
 RCT_EXTERN_METHOD(
-  detectFaces:(NSDictionary *)pixelData
+  detectFaces:(NSString *)pixelDataBase64
   width:(NSInteger)width
   height:(NSInteger)height
   format:(NSString *)format

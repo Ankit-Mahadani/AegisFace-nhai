@@ -8,7 +8,7 @@
  *   import { enroll, authenticate, listPendingEvents, syncNow, purgeSynced } from './AegisFace';
  */
 import { v4 as uuidv4 } from 'uuid';
-import DeviceInfo from 'react-native-device-info';
+import { MMKV } from 'react-native-mmkv';
 
 import { faceDetector } from './implementations/MediaPipeFaceDetector';
 import { MockEmbedder } from './implementations/MockEmbedder';
@@ -18,15 +18,27 @@ import { eventStore } from './implementations/SqliteEventStore';
 import { noopSync } from './implementations/NoopSync';
 import { amplifySync } from './implementations/AmplifySync';
 import { SyncQueue } from './implementations/SyncQueue';
+import { antiSpoof } from './implementations/PassiveAntiSpoof';
 import { cosineSimilarity } from './utils/geometry';
 import { alignFaceCrop } from './utils/imageProcessing';
 import { makeStopwatch, logPerfTable } from './utils/performance';
 import {
   USE_MOCK_EMBEDDER,
   USE_AMPLIFY_SYNC,
+  ENABLE_PASSIVE_ANTISPOOF,
   MATCH_THRESHOLD_TAU,
   ENROLL_FRAMES,
 } from './config/constants';
+
+// ─── Stable device ID ───────────────────────────────────────────────────────
+
+let _deviceStore: MMKV | null = null;
+function getDeviceId(): string {
+  if (!_deviceStore) _deviceStore = new MMKV({ id: 'aegisface.device' });
+  let id = _deviceStore.getString('deviceId');
+  if (!id) { id = uuidv4(); _deviceStore.set('deviceId', id); }
+  return id;
+}
 
 // ─── Singleton wiring ───────────────────────────────────────────────────────
 
@@ -40,6 +52,7 @@ let _bootstrapped = false;
 export async function bootstrap(): Promise<void> {
   if (_bootstrapped) return;
   if (embedder instanceof TfliteFaceEmbedder) await embedder.load();
+  if (ENABLE_PASSIVE_ANTISPOOF) await antiSpoof.load();
   syncQueue.startWatching();
   _bootstrapped = true;
 }
@@ -88,6 +101,7 @@ export interface AuthResult {
   userId?: string;
   score: number;
   livenessPassed: boolean;
+  antiSpoofPassed: boolean;
   eventId: string;
   perfMs: number;
 }
@@ -111,7 +125,11 @@ export async function authenticate(options: {
   const detectMs = sw.lap();
 
   if (faces.length === 0) {
-    return { success: false, score: 0, livenessPassed: options.livenessPassed, eventId, perfMs: detectMs };
+    return {
+      success: false, score: 0,
+      livenessPassed: options.livenessPassed, antiSpoofPassed: false,
+      eventId, perfMs: detectMs,
+    };
   }
 
   // Align
@@ -122,6 +140,13 @@ export async function authenticate(options: {
     face.bbox, face.landmarks,
   );
   const alignMs = sw.lap();
+
+  // Passive anti-spoof (runs on the aligned 112×112 crop)
+  let antiSpoofPassed = true;
+  if (ENABLE_PASSIVE_ANTISPOOF) {
+    const as = await antiSpoof.predict(crop, 112, 112);
+    antiSpoofPassed = as.passed;
+  }
 
   // Embed
   const queryEmb = await embedder.embed(crop, 112, 112);
@@ -146,10 +171,10 @@ export async function authenticate(options: {
 
   logPerfTable('authenticate', { detect: detectMs, align: alignMs, embed: embedMs, match: matchMs, total: totalMs });
 
-  const success = bestScore >= MATCH_THRESHOLD_TAU && options.livenessPassed;
+  const success = bestScore >= MATCH_THRESHOLD_TAU && options.livenessPassed && antiSpoofPassed;
 
   // Persist event — NEVER store face image
-  const deviceId = await DeviceInfo.getUniqueId();
+  const deviceId = getDeviceId();
   await eventStore.insert({
     eventId,
     userId: bestUserId ?? 'UNKNOWN',
@@ -168,6 +193,7 @@ export async function authenticate(options: {
     userId: success ? bestUserId : undefined,
     score: bestScore,
     livenessPassed: options.livenessPassed,
+    antiSpoofPassed,
     eventId,
     perfMs: totalMs,
   };

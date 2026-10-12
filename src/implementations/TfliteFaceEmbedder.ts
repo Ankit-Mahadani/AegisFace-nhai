@@ -16,10 +16,13 @@ import type { FaceEmbedder } from '../interfaces/FaceEmbedder';
 import { EMBEDDING_DIM, INPUT_SIZE } from '../config/constants';
 import { l2Normalise } from '../utils/geometry';
 
-// TODO(human): Place mobilefacenet_int8.tflite in the models/ directory.
-// The Metro bundler includes it via `require()` once present.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const MODEL_ASSET = require('../../models/mobilefacenet_int8.tflite') as number;
+let MODEL_ASSET: number | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  MODEL_ASSET = require('../../models/mobilefacenet_int8.tflite') as number;
+} catch {
+  // Model file not present — load() will throw a helpful error instead of crashing at import time
+}
 
 export class TfliteFaceEmbedder implements FaceEmbedder {
   private model: TfliteModel | null = null;
@@ -32,6 +35,9 @@ export class TfliteFaceEmbedder implements FaceEmbedder {
   }
 
   async load(): Promise<void> {
+    if (!MODEL_ASSET) {
+      throw new Error('mobilefacenet_int8.tflite not found in models/. Run tools/download_models.sh or set USE_MOCK_EMBEDDER=true.');
+    }
     // Pass empty delegates array → default CPU. Add 'nnapi' or 'core-ml' for hardware acceleration.
     this.model = await loadTensorflowModel(MODEL_ASSET, []);
     this._isReady = true;

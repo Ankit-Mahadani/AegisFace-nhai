@@ -6,7 +6,7 @@ buildscript {
     mavenCentral()
   }
   dependencies {
-    classpath('com.android.tools.build:gradle')
+    classpath('com.android.tools.build:gradle:8.7.2')
     classpath('com.facebook.react:react-native-gradle-plugin')
     classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
   }
@@ -22,3 +22,13 @@ allprojects {
 
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
+
+// Redirect CMake staging dir to a short path to avoid Windows MAX_PATH on release builds
+subprojects { proj ->
+    proj.plugins.withId('com.android.library') {
+        try {
+            proj.android.externalNativeBuild.cmake.buildStagingDirectory =
+                new File("C:/cxx/${proj.name}")
+        } catch (ignored) {}
+    }
+}

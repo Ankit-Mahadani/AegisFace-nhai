@@ -4,8 +4,13 @@
  * Flow:
  *   1. Show live camera with face overlay
  *   2. Run liveness challenge sequence (BLINK / SMILE / TURN)
+ *      - Real device: driven by landmarks from MediaPipe
+ *      - Simulator / stub mode: auto-advances with mock blendshapes
  *   3. On liveness pass, run face embedding + 1:N match
  *   4. Show PASS/FAIL result with user ID, score, latency
+ *
+ * Frame processing uses VisionCamera v5's useFrameOutput API
+ * (requires react-native-vision-camera-worklets).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -16,7 +21,10 @@ import {
   Camera,
   useCameraDevice,
   useCameraPermission,
+  useFrameOutput,
 } from 'react-native-vision-camera';
+import type { Frame } from 'react-native-vision-camera';
+import { runOnJS, useSharedValue } from 'react-native-worklets-core';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { FaceOverlay } from '../components/FaceOverlay';
 import { LivenessPrompt } from '../components/LivenessPrompt';
@@ -26,6 +34,7 @@ import type { FaceDetection } from '../interfaces/FaceDetector';
 import type { LivenessState } from '../interfaces/LivenessEngine';
 import { authenticate } from '../AegisFace';
 import type { AuthResult } from '../AegisFace';
+import { isNativeMediaPipeAvailable } from '../native/MediaPipeModule';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Authenticate'>;
 
@@ -39,61 +48,114 @@ export function AuthenticateScreen({ navigation }: Props) {
   const [faces, setFaces] = useState<FaceDetection[]>([]);
   const [livenessState, setLivenessState] = useState<LivenessState>(() => livenessEngine.start());
   const [result, setResult] = useState<AuthResult | null>(null);
-  const [viewSize] = useState({ width: 300, height: 400 });
 
-  // Simulated frame loop (real device uses useFrameOutput worklet)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const livenessRef = useRef(livenessState);
   livenessRef.current = livenessState;
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
+  const latestFrameRef = useRef<{
+    pixelBuffer: ArrayBuffer; width: number; height: number; format: string;
+  } | null>(null);
+
+  // Shared values (worklet thread)
+  const frameCounter    = useSharedValue(0);
+  const isLiveActive    = useSharedValue(true);
 
   useEffect(() => {
     if (!hasPermission) requestPermission();
   }, [hasPermission, requestPermission]);
 
+  // ─── JS-thread handler ────────────────────────────────────────────────────
+  const onFrameData = useCallback(async (
+    buffer: ArrayBuffer, w: number, h: number, fmt: string,
+  ) => {
+    if (stageRef.current !== 'liveness') return;
+
+    latestFrameRef.current = { pixelBuffer: buffer, width: w, height: h, format: fmt };
+
+    try {
+      const detections = await faceDetector.detect(buffer, w, h, fmt);
+      setFaces(detections);
+
+      if (detections.length > 0 && isNativeMediaPipeAvailable) {
+        const face = detections[0]!;
+        const updated = livenessEngine.update(
+          livenessRef.current, face.landmarks, face.blendshapes,
+        );
+        setLivenessState({ ...updated });
+        if (updated.passed !== null) {
+          isLiveActive.value = false;
+          void runAuthentication(updated.passed);
+        }
+      }
+    } catch {
+      // skip bad frames
+    }
+  }, [isLiveActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── VisionCamera v5 frame output (worklet) ───────────────────────────────
+  const onFrameWorklet = useCallback((frame: Frame) => {
+    'worklet';
+    if (!isLiveActive.value) { frame.dispose(); return; }
+
+    // ~10 fps at 30 fps camera
+    frameCounter.value = (frameCounter.value + 1) % 3;
+    if (frameCounter.value !== 0) { frame.dispose(); return; }
+
+    if (!frame.isValid || !frame.hasPixelBuffer) { frame.dispose(); return; }
+
+    const buf  = frame.getPixelBuffer();
+    const copy = buf.slice(0);
+    const fmt  = frame.pixelFormat as string;
+    frame.dispose();
+
+    runOnJS(onFrameData)(copy, frame.width, frame.height, fmt);
+  }, [onFrameData, isLiveActive, frameCounter]);
+
+  const frameOutput = useFrameOutput({
+    pixelFormat: 'rgb',
+    dropFramesWhileBusy: true,
+    onFrame: onFrameWorklet,
+  });
+
+  // ─── Mock liveness path (simulator / no native MediaPipe) ─────────────────
+  const mockTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
+    if (isNativeMediaPipeAvailable) return;
     if (stage !== 'liveness') return;
 
-    // Poll with stub landmarks every 100ms until liveness completes
-    timerRef.current = setInterval(async () => {
+    mockTimerRef.current = setInterval(() => {
       const current = livenessRef.current;
-      if (current.passed !== null) {
-        clearInterval(timerRef.current!);
-        return;
-      }
+      if (current.passed !== null) { clearInterval(mockTimerRef.current!); return; }
 
-      // In mock mode, produce synthetic landmarks that satisfy challenges over time
       const mockLandmarks = Array.from({ length: 468 }, (_, i) => ({
         x: 0.5 + 0.18 * Math.cos((i / 468) * 2 * Math.PI),
         y: 0.45 + 0.28 * Math.sin((i / 468) * 2 * Math.PI),
       }));
 
-      // Mock blendshapes that trigger challenges sequentially
-      const elapsed = Date.now() - current.startedAt;
-      const challengeIdx = current.currentIndex;
-      const challengeType = current.challenges[challengeIdx]?.type;
+      const idx      = current.currentIndex;
+      const type     = current.challenges[idx]?.type;
+      const started  = current.challenges[idx]?.startedAt;
+      const cElapsed = started ? Date.now() - started : 0;
       const blendshapes: Record<string, number> = {};
 
-      // Simulate challenge completion after 1.5s of looking
-      const challengeElapsed = current.challenges[challengeIdx]?.startedAt
-        ? Date.now() - current.challenges[challengeIdx]!.startedAt!
-        : 0;
-
-      if (challengeType === 'BLINK' && challengeElapsed > 1200) {
-        blendshapes['eyeBlinkLeft'] = challengeElapsed > 1200 && challengeElapsed < 1500 ? 0.8 : 0.1;
-        blendshapes['eyeBlinkRight'] = blendshapes['eyeBlinkLeft'];
+      if (type === 'BLINK' && cElapsed > 1200) {
+        const v = cElapsed > 1200 && cElapsed < 1500 ? 0.8 : 0.1;
+        blendshapes['eyeBlinkLeft']  = v;
+        blendshapes['eyeBlinkRight'] = v;
       }
-      if (challengeType === 'SMILE' && challengeElapsed > 1200) {
-        blendshapes['mouthSmileLeft'] = 0.8;
+      if (type === 'SMILE' && cElapsed > 1200) {
+        blendshapes['mouthSmileLeft']  = 0.8;
         blendshapes['mouthSmileRight'] = 0.8;
       }
-      if (challengeType === 'TURN_LEFT' && challengeElapsed > 1200) {
-        // Override yaw via direct blendshape-like signal
-        mockLandmarks[1] = { x: 0.35, y: 0.45 }; // nose tip shifted left
-        mockLandmarks[234] = { x: 0.15, y: 0.45 }; // left ear
-        mockLandmarks[454] = { x: 0.65, y: 0.45 }; // right ear
+      if (type === 'TURN_LEFT' && cElapsed > 1200) {
+        mockLandmarks[1]   = { x: 0.35, y: 0.45 };
+        mockLandmarks[234] = { x: 0.15, y: 0.45 };
+        mockLandmarks[454] = { x: 0.65, y: 0.45 };
       }
-      if (challengeType === 'TURN_RIGHT' && challengeElapsed > 1200) {
-        mockLandmarks[1] = { x: 0.65, y: 0.45 };
+      if (type === 'TURN_RIGHT' && cElapsed > 1200) {
+        mockLandmarks[1]   = { x: 0.65, y: 0.45 };
         mockLandmarks[234] = { x: 0.35, y: 0.45 };
         mockLandmarks[454] = { x: 0.85, y: 0.45 };
       }
@@ -102,25 +164,29 @@ export function AuthenticateScreen({ navigation }: Props) {
       setLivenessState({ ...updated });
 
       if (updated.passed !== null) {
-        clearInterval(timerRef.current!);
-        if (updated.passed) {
-          await runAuthentication(updated.passed);
-        }
+        clearInterval(mockTimerRef.current!);
+        void runAuthentication(updated.passed);
       }
     }, 100);
 
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [stage]);
+    return () => { if (mockTimerRef.current) clearInterval(mockTimerRef.current); };
+  }, [stage]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ─── Authentication step ──────────────────────────────────────────────────
   async function runAuthentication(livenessPassed: boolean) {
     setStage('matching');
-    // Synthesise a frame for mock mode
-    const buf = new ArrayBuffer(112 * 112 * 3);
+    isLiveActive.value = false;
+
+    const frame = latestFrameRef.current ?? {
+      pixelBuffer: new ArrayBuffer(112 * 112 * 3),
+      width: 112, height: 112, format: 'rgb',
+    };
+
     const res = await authenticate({
-      pixelBuffer: buf,
-      width: 112,
-      height: 112,
-      format: 'rgb',
+      pixelBuffer: frame.pixelBuffer,
+      width: frame.width,
+      height: frame.height,
+      format: frame.format,
       livenessPassed,
     });
     setResult(res);
@@ -133,9 +199,12 @@ export function AuthenticateScreen({ navigation }: Props) {
     setLivenessState(newState);
     setResult(null);
     setFaces([]);
+    latestFrameRef.current = null;
+    isLiveActive.value = true;
     setStage('liveness');
   }
 
+  // ─── Render ───────────────────────────────────────────────────────────────
   if (!hasPermission) {
     return (
       <View style={styles.center}>
@@ -157,11 +226,14 @@ export function AuthenticateScreen({ navigation }: Props) {
                 style={StyleSheet.absoluteFill}
                 device={device}
                 isActive={stage === 'liveness'}
+                outputs={stage === 'liveness' ? [frameOutput] : []}
               />
-              <FaceOverlay faces={faces} viewWidth={viewSize.width} viewHeight={viewSize.height} />
+              <FaceOverlay faces={faces} viewWidth={300} viewHeight={400} />
             </>
           ) : (
-            <View style={styles.noCamera}><Text style={styles.label}>No camera</Text></View>
+            <View style={styles.noCamera}>
+              <Text style={styles.label}>No camera</Text>
+            </View>
           )}
         </View>
       )}
@@ -187,9 +259,10 @@ export function AuthenticateScreen({ navigation }: Props) {
           {result.success && (
             <Text style={styles.userId}>{result.userId}</Text>
           )}
-          <ResultRow label="Match score" value={(result.score * 100).toFixed(1) + ' %'} />
-          <ResultRow label="Liveness" value={result.livenessPassed ? 'Passed' : 'Failed'} />
-          <ResultRow label="Latency" value={result.perfMs + ' ms'} />
+          <ResultRow label="Match score"  value={(result.score * 100).toFixed(1) + ' %'} />
+          <ResultRow label="Liveness"     value={result.livenessPassed  ? 'Passed' : 'Failed'} />
+          <ResultRow label="Anti-spoof"   value={result.antiSpoofPassed ? 'Passed' : 'Failed'} />
+          <ResultRow label="Latency"      value={result.perfMs + ' ms'} />
           <View style={styles.rowButtons}>
             <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={restart}>
               <Text style={styles.btnText}>Try Again</Text>
@@ -216,20 +289,34 @@ function ResultRow({ label, value }: { label: string; value: string }) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0F0F1A' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  cameraWrap: { flex: 1, margin: 16, borderRadius: 20, overflow: 'hidden', position: 'relative' },
-  noCamera: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1A1A2E' },
+  cameraWrap: {
+    flex: 1, margin: 16, borderRadius: 20,
+    overflow: 'hidden', position: 'relative',
+  },
+  noCamera: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#1A1A2E',
+  },
   promptWrap: { padding: 16, alignItems: 'center' },
   label: { color: '#aaa', fontSize: 14, textAlign: 'center', marginTop: 8 },
-  resultCard: { backgroundColor: '#1A1A2E', margin: 16, borderRadius: 20, gap: 12 },
+  resultCard: {
+    backgroundColor: '#1A1A2E', margin: 16, borderRadius: 20, gap: 12,
+  },
   resultStatus: { fontSize: 24, fontWeight: '800', textAlign: 'center' },
   pass: { color: '#00FF88' },
   fail: { color: '#FF4444' },
   userId: { color: '#fff', fontSize: 20, fontWeight: '700', textAlign: 'center' },
-  resultRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', paddingHorizontal: 24 },
+  resultRow: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    width: '100%', paddingHorizontal: 24,
+  },
   resultLabel: { color: '#888', fontSize: 14 },
   resultValue: { color: '#fff', fontSize: 14, fontWeight: '600' },
   rowButtons: { flexDirection: 'row', gap: 12, marginTop: 16 },
-  btn: { backgroundColor: '#00FF88', borderRadius: 12, paddingVertical: 14, paddingHorizontal: 24, alignItems: 'center' },
+  btn: {
+    backgroundColor: '#00FF88', borderRadius: 12,
+    paddingVertical: 14, paddingHorizontal: 24, alignItems: 'center',
+  },
   btnSecondary: { backgroundColor: '#333' },
   btnText: { color: '#000', fontWeight: '700', fontSize: 15 },
 });

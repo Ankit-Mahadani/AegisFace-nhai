@@ -1,5 +1,5 @@
 import type { FaceDetection, FaceDetector, FaceBBox, NormPoint } from '../interfaces/FaceDetector';
-import { MediaPipe } from '../native/MediaPipeModule';
+import { MediaPipe, detectFacesAsync } from '../native/MediaPipeModule';
 import type { NativeFaceResult } from '../native/types';
 
 function toDetection(r: NativeFaceResult): FaceDetection {
@@ -10,16 +10,24 @@ function toDetection(r: NativeFaceResult): FaceDetection {
 }
 
 export class MediaPipeFaceDetector implements FaceDetector {
+  /**
+   * Async detection — uses the native MediaPipe module when available,
+   * falling back to the JS stub otherwise.  Safe to call from the JS thread.
+   */
   async detect(
     pixelBuffer: ArrayBuffer,
     width: number,
     height: number,
     format: string,
   ): Promise<FaceDetection[]> {
-    const results = MediaPipe.detectFaces(pixelBuffer, width, height, format);
+    const results = await detectFacesAsync(pixelBuffer, width, height, format);
     return results.map(toDetection);
   }
 
+  /**
+   * Synchronous detection — always uses the JS stub.
+   * Only call from a VisionCamera worklet where async is not available.
+   */
   detectSync(
     pixelBuffer: ArrayBuffer,
     width: number,

@@ -11,15 +11,14 @@
     "expo-status-bar": "~56.0.4",
     "react": "19.2.3",
     "react-native": "0.85.3",
-    "react-native-device-info": "^15.0.2",
-    "react-native-fast-tflite": "^3.0.1",
+"react-native-fast-tflite": "^3.0.1",
     "react-native-keychain": "^10.0.0",
     "react-native-mmkv": "^4.3.1",
-    "react-native-reanimated": "^4.4.0",
-    "react-native-safe-area-context": "^5.8.0",
+"react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "^4.25.2",
-    "react-native-svg": "^15.15.5",
+    "react-native-svg": "15.15.4",
     "react-native-vision-camera": "^5.0.11",
+    "react-native-vision-camera-worklets": "^5.0.11",
     "react-native-worklets-core": "^1.6.3",
     "uuid": "^14.0.0"
   },
@@ -29,6 +28,7 @@
     ]
   },
   "scripts": {
+    "postinstall": "patch-package",
     "start": "expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",
@@ -39,6 +39,8 @@
     "@types/react": "^19.2.15",
     "@types/react-native": "^0.72.8",
     "@types/uuid": "^10.0.0",
+    "babel-preset-expo": "^56.0.14",
+    "patch-package": "^8.0.1",
     "typescript": "^6.0.3"
   }
 }

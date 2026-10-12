@@ -2,6 +2,23 @@
   "expo": {
     "name": "AegisFace",
     "slug": "AegisFace",
-    "version": "1.0.0"
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.aegisface",
+      "infoPlist": {
+        "NSCameraUsageDescription": "AegisFace uses the camera to capture faces for enrollment and authentication. No images are stored on this device."
+      }
+    },
+    "android": {
+      "package": "com.aegisface",
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": []
   }
 }

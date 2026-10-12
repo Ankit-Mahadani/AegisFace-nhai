@@ -1,0 +1,34 @@
+diff --git a/node_modules/expo-modules-core/android/build.gradle b/node_modules/expo-modules-core/android/build.gradle
+index b42245c..9fe1b71 100644
+--- a/node_modules/expo-modules-core/android/build.gradle
++++ b/node_modules/expo-modules-core/android/build.gradle
+@@ -288,24 +288,11 @@ def generateStubPCHTask = tasks.register("generateStubPCH") {
+         def pchFile = new File(entry.file.substring(0, entry.file.length() - ".cxx".length()) + ".pch")
+
+         if (!pchFile.exists() || pchFile.length() == 0) {
+-          def stubHeader = new File(entry.directory, "stub_pch.hxx")
+-          stubHeader.text = ""
+-
+-          def stubHeaderPath = stubHeader.absolutePath.replace('\\', '/')
+-
+-          def cmd = entry.command
+-            // Replace the forced-include path: `-Xclang -include -Xclang <path>/cmake_pch.hxx`
+-            .replaceAll(/-Xclang -include -Xclang [^\s]+cmake_pch\.hxx(?=\s)/, java.util.regex.Matcher.quoteReplacement("-Xclang -include -Xclang ${stubHeaderPath}"))
+-            // Replace the source file operand: `<path>/cmake_pch.hxx.cxx`
+-            .replaceAll(/[^\s]+cmake_pch\.hxx\.cxx/, java.util.regex.Matcher.quoteReplacement(stubHeaderPath))
+-
+-          def process = new ProcessBuilder(cmd.split(" ").toList())
+-            .directory(new File(entry.directory))
+-            .redirectErrorStream(true)
+-            .start()
+-          if (process.waitFor() != 0) {
+-            throw new GradleException("Stub PCH generation failed: ${process.inputStream.text}")
+-          }
++          // On Windows, project paths with spaces break ProcessBuilder command splitting.
++          // Create a zero-byte placeholder so ninja sees the PCH as stale and regenerates
++          // the real binary PCH via its own properly-quoted commands during the actual build.
++          pchFile.parentFile?.mkdirs()
++          pchFile.createNewFile()
+         }
+
+         // Ensure PCH is older than source so ninja rebuilds the real one during build
