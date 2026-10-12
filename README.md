@@ -25,7 +25,7 @@ AegisFace is a cross-platform (Android 8.0+ / iOS 12+) React Native module that 
 
 ```bash
 # Prerequisites: Node 18+, JDK 17+, Android SDK (API 26+)
-git clone <this-repo>
+git clone https://github.com/Ankit-Mahadani/AegisFace-nhai.git
 cd AegisFace-nhai
 npm install
 
